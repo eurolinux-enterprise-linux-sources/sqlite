@@ -10,7 +10,7 @@
 Summary: Library that implements an embeddable SQL database engine
 Name: sqlite
 Version: %{basever}
-Release: 1%{?dist}
+Release: 1%{?dist}.2
 License: Public Domain
 Group: Applications/Databases
 URL: http://www.sqlite.org/
@@ -20,6 +20,11 @@ Source1: http://www.sqlite.org/sqlite_docs_%{docver}.zip
 Patch1: sqlite-3.6.12-libdl.patch
 # Avoid insecure sprintf(), use a system path for lempar.c, patch from Debian
 Patch2: sqlite-3.6.6.2-lemon-snprintf.patch
+# https://bugzilla.redhat.com/show_bug.cgi?id=1212357
+# CVE-2015-3416
+Patch3: sqlite-3.6.20-printf.patch
+# Fix compiler warnings found with rpmdiff
+Patch4: sqlite-3.6.20-warnings.patch
 BuildRequires: ncurses-devel readline-devel glibc-devel
 # libdl patch needs
 BuildRequires: autoconf
@@ -90,6 +95,8 @@ This package contains the tcl modules for %{name}.
 %setup -q -a1
 %patch1 -p1 -b .libdl
 %patch2 -p1 -b .lemon-sprintf
+%patch3 -p1 -b .printf
+%patch4 -p1 -b .warnings
 
 %build
 autoconf
@@ -172,6 +179,14 @@ rm -rf $RPM_BUILD_ROOT
 %endif
 
 %changelog
+* Wed Jul 29 2015 Jan Stanek <jstanek@redhat.com> - 3.6.20-1.2
+- Add patch for compiler warnings highlighted by rpmdiff.
+  Related: rhbz#1244727
+
+* Wed Jul 22 2015 Viktor Jancik <vjancik@redhat.com> - 3.6.20-1.el6_7.1
+- fix for CVE-2015-3416
+  Resolves: #1244727
+
 * Tue Nov 17 2009 Panu Matilainen <pmatilai@redhat.com> - 3.6.20-1
 - update to 3.6.20 (http://www.sqlite.org/releaselog/3_6_20.html)
 

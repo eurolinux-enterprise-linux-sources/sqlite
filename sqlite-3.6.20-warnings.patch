@@ -1,0 +1,73 @@
+# Fix fo some harmless compiler warnings. Backported from upstream.
+# Original: https://www.sqlite.org/cgi/src/info/46f5a68bfa4199a4bd398030bf88bfbb4df3d5ca
+
+diff -up sqlite-3.6.20/src/build.c.old sqlite-3.6.20/src/build.c
+--- sqlite-3.6.20/src/build.c.old	2015-07-29 12:34:53.979121894 +0200
++++ sqlite-3.6.20/src/build.c	2015-07-29 12:35:07.100191030 +0200
+@@ -1659,7 +1659,7 @@ void sqlite3CreateView(
+   const char *z;
+   Token sEnd;
+   DbFixer sFix;
+-  Token *pName;
++  Token *pName = 0;
+   int iDb;
+   sqlite3 *db = pParse->db;
+ 
+diff -up sqlite-3.6.20/src/vdbeaux.c.old sqlite-3.6.20/src/vdbeaux.c
+--- sqlite-3.6.20/src/vdbeaux.c.old	2015-07-29 12:38:07.827143300 +0200
++++ sqlite-3.6.20/src/vdbeaux.c	2015-07-29 12:38:14.221176990 +0200
+@@ -489,10 +489,10 @@ int sqlite3VdbeAddOpList(Vdbe *p, int nO
+ ** static array using sqlite3VdbeAddOpList but we want to make a
+ ** few minor changes to the program.
+ */
+-void sqlite3VdbeChangeP1(Vdbe *p, int addr, int val){
++void sqlite3VdbeChangeP1(Vdbe *p, u32 addr, int val){
+   assert( p!=0 );
+   assert( addr>=0 );
+-  if( p->nOp>addr ){
++  if( ((u32)p->nOp)>addr ){
+     p->aOp[addr].p1 = val;
+   }
+ }
+@@ -501,10 +501,10 @@ void sqlite3VdbeChangeP1(Vdbe *p, int ad
+ ** Change the value of the P2 operand for a specific instruction.
+ ** This routine is useful for setting a jump destination.
+ */
+-void sqlite3VdbeChangeP2(Vdbe *p, int addr, int val){
++void sqlite3VdbeChangeP2(Vdbe *p, u32 addr, int val){
+   assert( p!=0 );
+   assert( addr>=0 );
+-  if( p->nOp>addr ){
++  if( ((u32)p->nOp)>addr ){
+     p->aOp[addr].p2 = val;
+   }
+ }
+@@ -512,10 +512,10 @@ void sqlite3VdbeChangeP2(Vdbe *p, int ad
+ /*
+ ** Change the value of the P3 operand for a specific instruction.
+ */
+-void sqlite3VdbeChangeP3(Vdbe *p, int addr, int val){
++void sqlite3VdbeChangeP3(Vdbe *p, u32 addr, int val){
+   assert( p!=0 );
+   assert( addr>=0 );
+-  if( p->nOp>addr ){
++  if( ((u32)p->nOp)>addr ){
+     p->aOp[addr].p3 = val;
+   }
+ }
+diff -up sqlite-3.6.20/src/vdbe.h.old sqlite-3.6.20/src/vdbe.h
+--- sqlite-3.6.20/src/vdbe.h.old	2015-07-29 12:35:37.121349215 +0200
++++ sqlite-3.6.20/src/vdbe.h	2015-07-29 12:35:56.809452953 +0200
+@@ -173,9 +173,9 @@ int sqlite3VdbeAddOp2(Vdbe*,int,int,int)
+ int sqlite3VdbeAddOp3(Vdbe*,int,int,int,int);
+ int sqlite3VdbeAddOp4(Vdbe*,int,int,int,int,const char *zP4,int);
+ int sqlite3VdbeAddOpList(Vdbe*, int nOp, VdbeOpList const *aOp);
+-void sqlite3VdbeChangeP1(Vdbe*, int addr, int P1);
+-void sqlite3VdbeChangeP2(Vdbe*, int addr, int P2);
+-void sqlite3VdbeChangeP3(Vdbe*, int addr, int P3);
++void sqlite3VdbeChangeP1(Vdbe*, u32 addr, int P1);
++void sqlite3VdbeChangeP2(Vdbe*, u32 addr, int P2);
++void sqlite3VdbeChangeP3(Vdbe*, u32 addr, int P3);
+ void sqlite3VdbeChangeP5(Vdbe*, u8 P5);
+ void sqlite3VdbeJumpHere(Vdbe*, int addr);
+ void sqlite3VdbeChangeToNoop(Vdbe*, int addr, int N);
