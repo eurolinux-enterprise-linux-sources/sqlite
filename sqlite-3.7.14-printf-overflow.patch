@@ -1,0 +1,130 @@
+# Fix for stack buffer overflow in src/printf.c, backpotred from upstream
+# Bugzilla: rhbz#1212357
+# Original fix: https://www.sqlite.org/src/info/aeca95ac77f6f320
+
+diff -up sqlite-src-3071700/src/printf.c.old sqlite-src-3071700/src/printf.c
+--- sqlite-src-3071700/src/printf.c.old	2015-07-03 10:54:17.644940587 +0200
++++ sqlite-src-3071700/src/printf.c	2015-07-03 11:52:50.704122467 +0200
+@@ -233,14 +233,17 @@ void sqlite3VXPrintf(
+       width = va_arg(ap,int);
+       if( width<0 ){
+         flag_leftjustify = 1;
+-        width = -width;
++        width = width >= -2147483647 ? -width : 0;
+       }
+       c = *++fmt;
+     }else{
++      unsigned wx = 0;
+       while( c>='0' && c<='9' ){
+-        width = width*10 + c - '0';
++        wx = wx*10 + c - '0';
+         c = *++fmt;
+       }
++      testcase( wx>0x7fffffff );
++      width = wx & 0x7fffffff;
+     }
+     /* Get the precision */
+     if( c=='.' ){
+@@ -248,13 +251,18 @@ void sqlite3VXPrintf(
+       c = *++fmt;
+       if( c=='*' ){
+         precision = va_arg(ap,int);
+-        if( precision<0 ) precision = -precision;
+         c = *++fmt;
++        if( precision<0 ) {
++          precision = precision >= -2147483647 ? -precision : -1;
++        }
+       }else{
++        unsigned px = 0;
+         while( c>='0' && c<='9' ){
+-          precision = precision*10 + c - '0';
++          px = px*10 + c - '0';
+           c = *++fmt;
+         }
++        testcase( px>0x7fffffff );
++        precision = px & 0x7fffffff;
+       }
+     }else{
+       precision = -1;
+@@ -418,7 +426,8 @@ void sqlite3VXPrintf(
+         for(idx=precision, rounder=0.4999; idx>0; idx--, rounder*=0.1);
+ #else
+         /* It makes more sense to use 0.5 */
+-        for(idx=precision, rounder=0.5; idx>0; idx--, rounder*=0.1){}
++        testcase( precision>0xfff );
++        for(idx=precision&0xfff, rounder=0.5; idx>0; idx--, rounder*=0.1){}
+ #endif
+         if( xtype==etFLOAT ) realvalue += rounder;
+         /* Normalize realvalue to within 10.0 > realvalue >= 1.0 */
+@@ -474,8 +483,10 @@ void sqlite3VXPrintf(
+         }else{
+           e2 = exp;
+         }
+-        if( e2+precision+width > etBUFSIZE - 15 ){
+-          bufpt = zExtra = sqlite3Malloc( e2+precision+width+15 );
++        if( e2+(i64)precision+(i64)width > etBUFSIZE - 15 ){
++          bufpt = zExtra = sqlite3Malloc(
++              e2+(i64)precision+(i64)width+15
++              );
+           if( bufpt==0 ){
+             pAccum->mallocFailed = 1;
+             return;
+
+diff -up sqlite-src-3071700/test/printf.test.old sqlite-src-3071700/test/printf.test
+--- sqlite-src-3071700/test/printf.test.old	2015-07-03 10:32:28.552140602 +0200
++++ sqlite-src-3071700/test/printf.test	2015-07-03 10:35:15.858079592 +0200
+@@ -472,6 +472,18 @@ do_test printf-1.16.7 {
+   sqlite3_mprintf_int {abc: (%#6d) (%#6x) (%#6o) :xyz}\
+        0xff676981 0xff676981 0xff676981
+ } {abc: (-9999999) (0xff676981) (037731664601) :xyz}
++do_test printf-1.17.1 {
++  sqlite3_mprintf_int {abd: %2147483647d %2147483647x %2147483647o} 1 1 1
++} {}
++do_test printf-1.17.2 {
++  sqlite3_mprintf_int {abd: %*d %x} 2147483647 1 1
++} {}
++do_test printf-1.17.3 {
++  sqlite3_mprintf_int {abd: %*d %x} -2147483648 1 1
++} {abd: 1 1}
++do_test printf-1.17.4 {
++  sqlite3_mprintf_int {abd: %.2147483648d %x %x} 1 1 1
++} {/.*/}
+ do_test printf-2.1.1.1 {
+   sqlite3_mprintf_double {abc: (%*.*f) :xyz} 1 1 0.001
+ } {abc: (0.0) :xyz}
+@@ -526,6 +538,9 @@ do_test printf-2.1.2.8 {
+ do_test printf-2.1.2.9 {
+   sqlite3_mprintf_double {abc: %d %d (%1.1g) :xyz} 1 1 1.0e-20
+ } {abc: 1 1 (1e-20) :xyz}
++do_test printf-2.1.2.10 {
++  sqlite3_mprintf_double {abc: %*.*f}  2000000000 1000000000 1.0e-20
++} {abc: }
+ do_test printf-2.1.3.1 {
+   sqlite3_mprintf_double {abc: (%*.*f) :xyz} 1 1 1.0
+ } {abc: (1.0) :xyz}
+@@ -3466,6 +3481,15 @@ do_test printf-3.5 {
+ do_test printf-3.6 {
+   sqlite3_mprintf_str {%d %d A String: (%-30s)} 1 2 {This is the string}
+ } [format {%d %d A String: (%-30s)} 1 2 {This is the string}]
++do_test printf-3.7 {
++  sqlite3_mprintf_str {%d A String: (%*s)} 1 2147483647 {This is the string}
++} []
++do_test printf-3.8 {
++  sqlite3_mprintf_str {%d A String: (%*s)} 1 -2147483648 {This is the string}
++} {1 A String: (This is the string)}
++do_test printf-3.9 {
++  sqlite3_mprintf_str {%d A String: (%.*s)} 1 -2147483648 {This is the string}
++} {1 A String: (This is the string)}
+ do_test snprintf-3.11 {
+   sqlite3_snprintf_str 2 {x%d %d %s} 10 10 {This is the string}
+ } {x}
+@@ -3685,6 +3709,9 @@ do_test printf-13.5 {
+ do_test printf-13.6 {
+   sqlite3_mprintf_hexdouble %.20f fff8000000000000
+ } {NaN}
++do_test printf-13.7 {
++  sqlite3_mprintf_hexdouble %2147483648.10000f 4693b8b5b5056e17
++} {/100000000000000000000000000000000.00/}
+ 
+ do_test printf-14.1 {
+   sqlite3_mprintf_str {abc-%y-123} 0 0 {not used}
