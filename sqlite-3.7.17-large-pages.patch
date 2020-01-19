@@ -1,0 +1,399 @@
+Backport of upstream commit db7d62c8d5:
+
+Avoid attempting to mmap memory from an offset that is not a multiple of
+the system page size on systems with page sizes larger than 32KB.
+
+https://www.sqlite.org/src/info/db7d62c8d58eb1e8654a762c9b199ae4e2759038
+
+Index: src/os_unix.c
+==================================================================
+--- src/os_unix.c
++++ src/os_unix.c
+@@ -321,10 +321,11 @@
+   return geteuid() ? 0 : fchown(fd,uid,gid);
+ }
+ 
+ /* Forward reference */
+ static int openDirectory(const char*, int*);
++static int unixGetpagesize(void);
+ 
+ /*
+ ** Many system calls are accessed through pointer-to-functions so that
+ ** they may be overridden at runtime to facilitate fault injection during
+ ** testing and sandboxing.  The following array holds the names and pointers
+@@ -443,10 +444,13 @@
+   { "mremap",       (sqlite3_syscall_ptr)mremap,          0 },
+ #else
+   { "mremap",       (sqlite3_syscall_ptr)0,               0 },
+ #endif
+ #define osMremap ((void*(*)(void*,size_t,size_t,int,...))aSyscall[23].pCurrent)
++
++  { "getpagesize",  (sqlite3_syscall_ptr)unixGetpagesize, 0 },
++#define osGetpagesize ((int(*)(void))aSyscall[24].pCurrent)
+ 
+ }; /* End of the overrideable system calls */
+ 
+ /*
+ ** This is the xSetSystemCall() method of sqlite3_vfs for all of the
+@@ -4103,10 +4107,40 @@
+ #endif
+ 
+   return rc;        
+ }
+ 
++/*
++** Return the system page size.
++**
++** This function should not be called directly by other code in this file. 
++** Instead, it should be called via macro osGetpagesize().
++*/
++static int unixGetpagesize(void){
++#if defined(_BSD_SOURCE)
++  return getpagesize();
++#else
++  return (int)sysconf(_SC_PAGESIZE);
++#endif
++}
++
++/*
++** Return the minimum number of 32KB shm regions that should be mapped at
++** a time, assuming that each mapping must be an integer multiple of the
++** current system page-size.
++**
++** Usually, this is 1. The exception seems to be systems that are configured
++** to use 64KB pages - in this case each mapping must cover at least two
++** shm regions.
++*/
++static int unixShmRegionPerMap(void){
++  int shmsz = 32*1024;            /* SHM region size */
++  int pgsz = osGetpagesize();   /* System page size */
++  assert( ((pgsz-1)&pgsz)==0 );   /* Page size must be a power of 2 */
++  if( pgsz<shmsz ) return 1;
++  return pgsz/shmsz;
++}
+ 
+ /*
+ ** Purge the unixShmNodeList list of all entries with unixShmNode.nRef==0.
+ **
+ ** This is not a VFS shared-memory method; it is a utility function called
+@@ -4114,14 +4148,15 @@
+ */
+ static void unixShmPurge(unixFile *pFd){
+   unixShmNode *p = pFd->pInode->pShmNode;
+   assert( unixMutexHeld() );
+   if( p && p->nRef==0 ){
++    int nShmPerMap = unixShmRegionPerMap();
+     int i;
+     assert( p->pInode==pFd->pInode );
+     sqlite3_mutex_free(p->mutex);
+-    for(i=0; i<p->nRegion; i++){
++    for(i=0; i<p->nRegion; i+=nShmPerMap){
+       if( p->h>=0 ){
+         osMunmap(p->apRegion[i], p->szRegion);
+       }else{
+         sqlite3_free(p->apRegion[i]);
+       }
+@@ -4324,10 +4359,12 @@
+ ){
+   unixFile *pDbFd = (unixFile*)fd;
+   unixShm *p;
+   unixShmNode *pShmNode;
+   int rc = SQLITE_OK;
++  int nShmPerMap = unixShmRegionPerMap();
++  int nReqRegion;
+ 
+   /* If the shared-memory file has not yet been opened, open it now. */
+   if( pDbFd->pShm==0 ){
+     rc = unixOpenSharedMemory(pDbFd);
+     if( rc!=SQLITE_OK ) return rc;
+@@ -4339,13 +4376,16 @@
+   assert( szRegion==pShmNode->szRegion || pShmNode->nRegion==0 );
+   assert( pShmNode->pInode==pDbFd->pInode );
+   assert( pShmNode->h>=0 || pDbFd->pInode->bProcessLock==1 );
+   assert( pShmNode->h<0 || pDbFd->pInode->bProcessLock==0 );
+ 
+-  if( pShmNode->nRegion<=iRegion ){
++  /* Minimum number of regions required to be mapped. */
++  nReqRegion = ((iRegion+nShmPerMap) / nShmPerMap) * nShmPerMap;
++
++  if( pShmNode->nRegion<nReqRegion ){
+     char **apNew;                      /* New apRegion[] array */
+-    int nByte = (iRegion+1)*szRegion;  /* Minimum required file size */
++    int nByte = nReqRegion*szRegion;   /* Minimum required file size */
+     struct stat sStat;                 /* Used by fstat() */
+ 
+     pShmNode->szRegion = szRegion;
+ 
+     if( pShmNode->h>=0 ){
+@@ -4390,21 +4430,23 @@
+       }
+     }
+ 
+     /* Map the requested memory region into this processes address space. */
+     apNew = (char **)sqlite3_realloc(
+-        pShmNode->apRegion, (iRegion+1)*sizeof(char *)
++        pShmNode->apRegion, nReqRegion*sizeof(char *)
+     );
+     if( !apNew ){
+       rc = SQLITE_IOERR_NOMEM;
+       goto shmpage_out;
+     }
+     pShmNode->apRegion = apNew;
+-    while(pShmNode->nRegion<=iRegion){
++    while( pShmNode->nRegion<nReqRegion ){
++      int nMap = szRegion*nShmPerMap;
++      int i;
+       void *pMem;
+       if( pShmNode->h>=0 ){
+-        pMem = osMmap(0, szRegion,
++        pMem = osMmap(0, nMap,
+             pShmNode->isReadonly ? PROT_READ : PROT_READ|PROT_WRITE, 
+             MAP_SHARED, pShmNode->h, szRegion*(i64)pShmNode->nRegion
+         );
+         if( pMem==MAP_FAILED ){
+           rc = unixLogError(SQLITE_IOERR_SHMMAP, "mmap", pShmNode->zFilename);
+@@ -4416,12 +4458,15 @@
+           rc = SQLITE_NOMEM;
+           goto shmpage_out;
+         }
+         memset(pMem, 0, szRegion);
+       }
+-      pShmNode->apRegion[pShmNode->nRegion] = pMem;
+-      pShmNode->nRegion++;
++
++      for(i=0; i<nShmPerMap; i++){
++        pShmNode->apRegion[pShmNode->nRegion+i] = &((char*)pMem)[szRegion*i];
++      }
++      pShmNode->nRegion += nShmPerMap;
+     }
+   }
+ 
+ shmpage_out:
+   if( pShmNode->nRegion>iRegion ){
+@@ -4631,25 +4676,10 @@
+ #endif
+ }
+ 
+ #if SQLITE_MAX_MMAP_SIZE>0
+ /*
+-** Return the system page size.
+-*/
+-static int unixGetPagesize(void){
+-#if HAVE_MREMAP
+-  return 512;
+-#elif defined(_BSD_SOURCE)
+-  return getpagesize();
+-#else
+-  return (int)sysconf(_SC_PAGESIZE);
+-#endif
+-}
+-#endif /* SQLITE_MAX_MMAP_SIZE>0 */
+-
+-#if SQLITE_MAX_MMAP_SIZE>0
+-/*
+ ** Attempt to set the size of the memory mapping maintained by file 
+ ** descriptor pFd to nNew bytes. Any existing mapping is discarded.
+ **
+ ** If successful, this function sets the following variables:
+ **
+@@ -4680,12 +4712,16 @@
+   assert( MAP_FAILED!=0 );
+ 
+   if( (pFd->ctrlFlags & UNIXFILE_RDONLY)==0 ) flags |= PROT_WRITE;
+ 
+   if( pOrig ){
+-    const int szSyspage = unixGetPagesize();
++#if HAVE_MREMAP
++    i64 nReuse = pFd->mmapSize;
++#else
++    const int szSyspage = osGetpagesize();
+     i64 nReuse = (pFd->mmapSize & ~(szSyspage-1));
++#endif
+     u8 *pReq = &pOrig[nReuse];
+ 
+     /* Unmap any pages of the existing mapping that cannot be reused. */
+     if( nReuse!=nOrig ){
+       osMunmap(pReq, nOrig-nReuse);
+@@ -7427,11 +7463,11 @@
+   };
+   unsigned int i;          /* Loop counter */
+ 
+   /* Double-check that the aSyscall[] array has been constructed
+   ** correctly.  See ticket [bb3a86e890c8e96ab] */
+-  assert( ArraySize(aSyscall)==24 );
++  assert( ArraySize(aSyscall)==25 );
+ 
+   /* Register all VFSes defined in the aVfs[] array */
+   for(i=0; i<(sizeof(aVfs)/sizeof(sqlite3_vfs)); i++){
+     sqlite3_vfs_register(&aVfs[i], i==0);
+   }
+
+Index: src/test_syscall.c
+==================================================================
+--- src/test_syscall.c
++++ src/test_syscall.c
+@@ -65,10 +65,15 @@
+ **     Return true if the named system call exists. Or false otherwise.
+ **
+ **   test_syscall list
+ **     Return a list of all system calls. The list is constructed using
+ **     the xNextSystemCall() VFS method.
++**
++**   test_syscall pagesize PGSZ
++**     If PGSZ is a power of two greater than 256, install a wrapper around
++**     OS function getpagesize() that reports the system page size as PGSZ.
++**     Or, if PGSZ is less than zero, remove any wrapper already installed.
+ */
+ 
+ #include "sqliteInt.h"
+ #include "sqlite3.h"
+ #include "tcl.h"
+@@ -87,11 +92,13 @@
+ 
+ static struct TestSyscallGlobal {
+   int bPersist;                   /* 1 for persistent errors, 0 for transient */
+   int nCount;                     /* Fail after this many more calls */
+   int nFail;                      /* Number of failures that have occurred */
+-} gSyscall = { 0, 0 };
++  int pgsz;
++  sqlite3_syscall_ptr orig_getpagesize;
++} gSyscall = { 0, 0, 0, 0, 0 };
+ 
+ static int ts_open(const char *, int, int);
+ static int ts_close(int fd);
+ static int ts_access(const char *zPath, int mode);
+ static char *ts_getcwd(char *zPath, size_t nPath);
+@@ -647,10 +654,49 @@
+ 
+   pVfs = sqlite3_vfs_find(0);
+   Tcl_SetObjResult(interp, Tcl_NewStringObj(pVfs->zName, -1));
+   return TCL_OK;
+ }
++
++static int ts_getpagesize(void){
++  return gSyscall.pgsz;
++}
++
++static int test_syscall_pagesize(
++  void * clientData,
++  Tcl_Interp *interp,
++  int objc,
++  Tcl_Obj *CONST objv[]
++){
++  sqlite3_vfs *pVfs = sqlite3_vfs_find(0);
++  int pgsz;
++  if( objc!=3 ){
++    Tcl_WrongNumArgs(interp, 2, objv, "PGSZ");
++    return TCL_ERROR;
++  }
++  if( Tcl_GetIntFromObj(interp, objv[2], &pgsz) ){
++    return TCL_ERROR;
++  }
++
++  if( pgsz<0 ){
++    if( gSyscall.orig_getpagesize ){
++      pVfs->xSetSystemCall(pVfs, "getpagesize", gSyscall.orig_getpagesize);
++    }
++  }else{
++    if( pgsz<512 || (pgsz & (pgsz-1)) ){
++      Tcl_AppendResult(interp, "pgsz out of range", 0);
++      return TCL_ERROR;
++    }
++    gSyscall.orig_getpagesize = pVfs->xGetSystemCall(pVfs, "getpagesize");
++    gSyscall.pgsz = pgsz;
++    pVfs->xSetSystemCall(
++        pVfs, "getpagesize", (sqlite3_syscall_ptr)ts_getpagesize
++    );
++  }
++
++  return TCL_OK;
++}
+ 
+ static int test_syscall(
+   void * clientData,
+   Tcl_Interp *interp,
+   int objc,
+@@ -666,10 +712,11 @@
+     { "reset",      test_syscall_reset },
+     { "errno",      test_syscall_errno },
+     { "exists",     test_syscall_exists },
+     { "list",       test_syscall_list },
+     { "defaultvfs", test_syscall_defaultvfs },
++    { "pagesize",   test_syscall_pagesize },
+     { 0, 0 }
+   };
+   int iCmd;
+   int rc;
+ 
+
+Index: test/syscall.test
+==================================================================
+--- test/syscall.test
++++ test/syscall.test
+@@ -59,10 +59,11 @@
+ foreach s {
+     open close access getcwd stat fstat ftruncate
+     fcntl read pread write pwrite fchmod fallocate
+     pread64 pwrite64 unlink openDirectory mkdir rmdir 
+     statvfs fchown umask mmap munmap mremap
++    getpagesize
+ } {
+   if {[test_syscall exists $s]} {lappend syscall_list $s}
+ }
+ do_test 3.1 { lsort [test_syscall list] } [lsort $syscall_list]
+ 
+
+ADDED   test/wal64k.test
+Index: test/wal64k.test
+==================================================================
+--- test/wal64k.test
++++ test/wal64k.test
+@@ -0,0 +1,47 @@
++# 2010 April 13
++#
++# The author disclaims copyright to this source code.  In place of
++# a legal notice, here is a blessing:
++#
++#    May you do good and not evil.
++#    May you find forgiveness for yourself and forgive others.
++#    May you share freely, never taking more than you give.
++#
++#***********************************************************************
++# This file implements regression tests for SQLite library.  The
++# focus of this file is testing the operation of the library in
++# "PRAGMA journal_mode=WAL" mode.
++#
++
++set testdir [file dirname $argv0]
++source $testdir/tester.tcl
++set testprefix wal64k
++
++ifcapable !wal {finish_test ; return }
++
++db close
++test_syscall pagesize 65536
++sqlite3 db test.db
++
++do_execsql_test 1.0 { 
++  PRAGMA journal_mode = WAL;
++  CREATE TABLE t1(x);
++  CREATE INDEX i1 ON t1(x);
++} {wal}
++do_test 1.1 { file size test.db-shm } {65536}
++
++do_test 1.2 {
++  execsql BEGIN
++  while {[file size test.db-shm]==65536} {
++    execsql { INSERT INTO t1 VALUES( randstr(900,1100) ) }
++  }
++  execsql COMMIT
++  file size test.db-shm
++} {131072}
++
++integrity_check 1.3
++
++db close
++test_syscall pagesize -1
++finish_test
++
+

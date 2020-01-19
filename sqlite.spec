@@ -10,7 +10,7 @@
 Summary: Library that implements an embeddable SQL database engine
 Name: sqlite
 Version: %{rpmver}
-Release: 1%{?dist}
+Release: 8%{?dist}
 License: Public Domain
 Group: Applications/Databases
 URL: http://www.sqlite.org/
@@ -30,6 +30,16 @@ Patch3: sqlite-3.7.10-pagecache-overflow-test.patch
 Patch4: sqlite-3.7.15-no-malloc-usable-size.patch
 # Man page completion
 Patch5: sqlite-3.7.16-man-missing-options.patch
+# Fix for test failure on aarch64
+Patch6: sqlite-3.7.17-real-cast.patch
+# Fix for 64k pages
+Patch7: sqlite-3.7.17-large-pages.patch
+# Fixes for CVE-2015-3415 CVE-2015-3414 CVE-2015-3416 sqlite: various flaws
+# https://bugzilla.redhat.com/show_bug.cgi?id=1244732
+Patch8:  sqlite-3.7.17-collation-sequence.patch
+Patch9:  sqlite-3.7.17-vdbe-free.patch
+Patch10: sqlite-3.7.14-printf-overflow.patch
+
 BuildRequires: ncurses-devel readline-devel glibc-devel
 BuildRequires: autoconf
 %if %{with tcl}
@@ -103,6 +113,11 @@ This package contains the tcl modules for %{name}.
 %patch3 -p1 -b .pagecache-overflow-test
 %patch4 -p1 -b .no-malloc-usable-size
 %patch5 -p1 -b .man-missing-options
+%patch6 -p1 -b .largest-integer
+%patch7 -p0 -b .large-pages
+%patch8 -p1 -b .collation
+%patch9 -p1 -b .vdbe-free
+%patch10 -p1 -b .printf-overflow
 
 # Remove cgi-script erroneously included in sqlite-doc-3070500
 rm -f %{name}-doc-%{realver}/search
@@ -193,6 +208,31 @@ rm -rf $RPM_BUILD_ROOT
 %endif
 
 %changelog
+* Thu Jul 23 2015 Jan Stanek <jstanek@redhat.com> 3.7.17-8
+- Fixes for CVE-2015-3415 CVE-2015-3414 CVE-2015-3416
+  Resolves: rhbz#1244732
+
+* Fri May  8 2015 Peter Robinson <pbrobinson@redhat.com> 3.7.17-7
+- Release bump
+
+* Tue Oct 21 2014 Dan Horák <dhorak@redhat.com> - 3.7.17-6
+- Release bump for ppc64le
+
+* Tue Aug 19 2014 Jan Stanek <jstanek@redhat.com> - 3.7.17-5
+- Release bump
+
+* Thu Jul 10 2014 Yaakov Selkowitz <yselkowi@redhat.com> - 3.7.17-4.1
+- Backport 64k page fix from latest upstream (#1118151)
+
+* Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 3.7.17-4
+- Mass rebuild 2014-01-24
+
+* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 3.7.17-3
+- Mass rebuild 2013-12-27
+
+* Thu Dec 05 2013 Jan Stanek <jstanek@redhat.com> - 3.7.17-2
+- Backported CAST fix from latest upstream
+
 * Wed May 22 2013 Jan Stanek <jstanek@redhat.com> - 3.7.17-1
 - Update to 3.7.17 (http://www.sqlite.org/releaselog/3_7_17.html)
 
