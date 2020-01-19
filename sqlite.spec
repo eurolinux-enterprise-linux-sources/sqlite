@@ -10,7 +10,7 @@
 Summary: Library that implements an embeddable SQL database engine
 Name: sqlite
 Version: %{rpmver}
-Release: 1%{?dist}
+Release: 4%{?dist}
 License: Public Domain
 Group: Applications/Databases
 URL: http://www.sqlite.org/
@@ -30,6 +30,9 @@ Patch3: sqlite-3.7.10-pagecache-overflow-test.patch
 Patch4: sqlite-3.7.15-no-malloc-usable-size.patch
 # Man page completion
 Patch5: sqlite-3.7.16-man-missing-options.patch
+# Fix for test failure on aarch64
+Patch6: sqlite-3.7.17-real-cast.patch
+
 BuildRequires: ncurses-devel readline-devel glibc-devel
 BuildRequires: autoconf
 %if %{with tcl}
@@ -103,6 +106,7 @@ This package contains the tcl modules for %{name}.
 %patch3 -p1 -b .pagecache-overflow-test
 %patch4 -p1 -b .no-malloc-usable-size
 %patch5 -p1 -b .man-missing-options
+%patch6 -p1 -b .largest-integer
 
 # Remove cgi-script erroneously included in sqlite-doc-3070500
 rm -f %{name}-doc-%{realver}/search
@@ -193,6 +197,15 @@ rm -rf $RPM_BUILD_ROOT
 %endif
 
 %changelog
+* Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 3.7.17-4
+- Mass rebuild 2014-01-24
+
+* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 3.7.17-3
+- Mass rebuild 2013-12-27
+
+* Thu Dec 05 2013 Jan Stanek <jstanek@redhat.com> - 3.7.17-2
+- Backported CAST fix from latest upstream
+
 * Wed May 22 2013 Jan Stanek <jstanek@redhat.com> - 3.7.17-1
 - Update to 3.7.17 (http://www.sqlite.org/releaselog/3_7_17.html)
 
